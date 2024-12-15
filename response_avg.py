@@ -1,9 +1,5 @@
 import pyshark
 import pandas as pd
-from scapy.all import PcapReader, PcapWriter
-import io
-import os
-import tempfile
 
 
 class ProcessPCAP:
