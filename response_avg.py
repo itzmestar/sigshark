@@ -1,5 +1,6 @@
 import pyshark
 import pandas as pd
+from datetime import datetime
 
 
 class ProcessPCAP:
@@ -56,6 +57,7 @@ class ProcessPCAP:
         for packet in self.capture:
             if i % 1000 == 0:
                 print(f"Processed {i} packets")
+            if i == 10000:
                 break
             try:
                 # Extract timestamp
@@ -127,9 +129,10 @@ class ProcessPCAP:
 
 
 def main(file_path):
-
+    print(datetime.now())
     process = ProcessPCAP(file_path)
     process.workflow()
+    print(datetime.now())
 
 
 if __name__ == "__main__":
