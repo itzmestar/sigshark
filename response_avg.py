@@ -1,16 +1,55 @@
 import pyshark
 import pandas as pd
 from datetime import datetime
+import multiprocessing as mp
+import subprocess
 
 
 class ProcessPCAP:
-    def __init__(self, pcap_file: str):
+    def __init__(self, pcap_file: str, chunk_size: int = 10000, total_size: int = 2000000):
         self.pcap_file = pcap_file
-        self.capture = pyshark.FileCapture(pcap_file, keep_packets=False)
-        print("PCAP file loaded.")
+        self.chunk_size = chunk_size
+        self.total_size = total_size
         self.transactions = []
         self.transactions_df = None
         self.response_times_df = None
+        self.total_packets = 0
+
+    def find_num_of_packets(self):
+        try:
+            cmd = ['tshark', '-r', self.pcap_file, '-q', '-z', 'io,stat,0']
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            lines = result.stdout.splitlines()
+            self.total_packets = int(lines[-2].split('|')[2].strip())
+            print(f"Total packets: {self.total_packets}")
+        except Exception as e:
+            print(e)
+
+    def split_pcap(self):
+        processes = mp.cpu_count()
+
+        packets_per_files = int(self.total_packets / processes)
+        subprocesses = []
+        for i in range(processes):
+            try:
+                output_file = f'__{i}___temp___.pcap'
+                start = i * packets_per_files
+                end = start + packets_per_files
+                display_filter = f"frame.number >= {start} && frame.number < {end}"
+
+                cmd = ['tshark', '-r', self.pcap_file, '-Y', display_filter, '-w', output_file]
+
+                #subprocess.run(cmd, check=True)
+                process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
+                subprocesses.append(process)
+            except Exception as e:
+                print(e)
+        for process in subprocesses:
+            process.wait()
 
     @staticmethod
     def extract_transaction_id(packet, protocol):
@@ -52,39 +91,35 @@ class ProcessPCAP:
                 return "Request" if 'Request' in str(packet.diameter.command_code) else "Response"
         return "UnknownMessageType"
 
-    def process_pcap(self):
-        i = 1
-        for packet in self.capture:
-            if i % 1000 == 0:
-                print(f"Processed {i} packets")
-            if i == 10000:
+    def process_chunk(self, start_index, chunk_size):
+        capture = pyshark.FileCapture(self.pcap_file, keep_packets=False)
+        transactions = []
+
+        for i, packet in enumerate(capture):
+            if i < start_index:
+                continue
+            if i >= start_index + chunk_size:
                 break
+
             try:
-                # Extract timestamp
                 timestamp = float(packet.sniff_timestamp)
 
-                # Check protocol
-                # Check for TCAP layer
                 if hasattr(packet, 'tcap'):
                     protocol = 'TCAP'
                     transaction_id = self.extract_transaction_id(packet, protocol)
                     msg_type = self.extract_message_type(packet, protocol)
-
-                elif hasattr(packet, 'ss7map'):  # SS7-MAP specific layer
+                elif hasattr(packet, 'ss7map'):
                     protocol = 'SS7-MAP'
                     transaction_id = self.extract_transaction_id(packet, protocol)
                     msg_type = self.extract_message_type(packet, protocol)
-
-                elif hasattr(packet, 'diameter'):  # Diameter specific layer
+                elif hasattr(packet, 'diameter'):
                     protocol = 'Diameter'
                     transaction_id = self.extract_transaction_id(packet, protocol)
                     msg_type = self.extract_message_type(packet, protocol)
-
                 else:
-                    # print(packet)
                     continue
 
-                self.transactions.append({
+                transactions.append({
                     'timestamp': timestamp,
                     'protocol': protocol,
                     'transaction_id': transaction_id,
@@ -92,7 +127,40 @@ class ProcessPCAP:
                 })
             except Exception as e:
                 print(f"Error parsing packet: {e}")
-            i += 1
+
+        capture.close()
+        return transactions
+
+    def generate_chunk_ranges(self):
+        """
+        Generator to yield start indices for chunks of packets.
+        """
+        start_index = 0
+        while True:
+            yield start_index, self.chunk_size
+            start_index += self.chunk_size
+
+    @staticmethod
+    def process_chunk_helper(args):
+        instance, chunk_start, chunk_end = args
+        return instance.process_chunk(chunk_start, chunk_end)
+
+    def process_pcap_parallel(self):
+        processes = mp.cpu_count()
+        print(f"Spawning {processes} processes...")
+        chunk_ranges = [
+            (self, start, start + self.chunk_size)
+            for start in range(0, self.total_size, self.chunk_size)
+        ]
+
+        results = []
+        with mp.Pool(processes=processes) as pool:
+            for chunk_result in pool.imap_unordered(self.process_chunk_helper, chunk_ranges):
+                if not chunk_result:  # Break the loop if no more packets are available
+                    break
+                results.append(chunk_result)
+
+        self.transactions = [item for sublist in results for item in sublist]
 
     def convert_to_df(self):
         self.transactions_df = pd.DataFrame(self.transactions)
@@ -122,10 +190,12 @@ class ProcessPCAP:
         print(avg_response_time_by_protocol)
 
     def workflow(self):
-        self.process_pcap()
-        self.convert_to_df()
-        self.calculate_response_times()
-        self.calculate_averages()
+        self.find_num_of_packets()
+        self.split_pcap()
+        #self.process_pcap_parallel()
+        #self.convert_to_df()
+        #self.calculate_response_times()
+        #self.calculate_averages()
 
 
 def main(file_path):
