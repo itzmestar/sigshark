@@ -3,6 +3,7 @@ import pandas as pd
 from datetime import datetime
 import multiprocessing as mp
 import subprocess
+import os
 
 
 class ProcessPCAP:
@@ -14,6 +15,7 @@ class ProcessPCAP:
         self.transactions_df = None
         self.response_times_df = None
         self.total_packets = 0
+        self.splitted_pcap_files = []
 
     def find_num_of_packets(self):
         try:
@@ -46,6 +48,7 @@ class ProcessPCAP:
                     stderr=subprocess.DEVNULL
                 )
                 subprocesses.append(process)
+                self.splitted_pcap_files.append(output_file)
             except Exception as e:
                 print(e)
         for process in subprocesses:
@@ -91,16 +94,14 @@ class ProcessPCAP:
                 return "Request" if 'Request' in str(packet.diameter.command_code) else "Response"
         return "UnknownMessageType"
 
-    def process_chunk(self, start_index, chunk_size):
-        capture = pyshark.FileCapture(self.pcap_file, keep_packets=False)
+    def process_pcap(self, pcap_file):
         transactions = []
+        if not os.path.exists(pcap_file):
+            print(f"Pcap: {pcap_file} doesn't exist.")
+            return transactions
+        capture = pyshark.FileCapture(pcap_file, keep_packets=False)
 
-        for i, packet in enumerate(capture):
-            if i < start_index:
-                continue
-            if i >= start_index + chunk_size:
-                break
-
+        for packet in capture:
             try:
                 timestamp = float(packet.sniff_timestamp)
 
@@ -129,7 +130,14 @@ class ProcessPCAP:
                 print(f"Error parsing packet: {e}")
 
         capture.close()
+
+        # delete file
+        self.delete_pcap(pcap_file)
         return transactions
+
+    @staticmethod
+    def delete_pcap(pcap_file):
+        os.remove(pcap_file)
 
     def generate_chunk_ranges(self):
         """
@@ -148,17 +156,9 @@ class ProcessPCAP:
     def process_pcap_parallel(self):
         processes = mp.cpu_count()
         print(f"Spawning {processes} processes...")
-        chunk_ranges = [
-            (self, start, start + self.chunk_size)
-            for start in range(0, self.total_size, self.chunk_size)
-        ]
 
-        results = []
         with mp.Pool(processes=processes) as pool:
-            for chunk_result in pool.imap_unordered(self.process_chunk_helper, chunk_ranges):
-                if not chunk_result:  # Break the loop if no more packets are available
-                    break
-                results.append(chunk_result)
+            results = pool.map(self.process_pcap, self.splitted_pcap_files)
 
         self.transactions = [item for sublist in results for item in sublist]
 
@@ -169,6 +169,7 @@ class ProcessPCAP:
         # Group by transaction ID and calculate response time
         response_times = []
         for txn_id, group in self.transactions_df.groupby('transaction_id'):
+            group = group.sort_values(by='timestamp')  # Ensure proper ordering
             request = group[group['msg_type'] == 'Request']
             response = group[group['msg_type'] == 'Response']
             if not request.empty and not response.empty:
@@ -192,10 +193,10 @@ class ProcessPCAP:
     def workflow(self):
         self.find_num_of_packets()
         self.split_pcap()
-        #self.process_pcap_parallel()
-        #self.convert_to_df()
-        #self.calculate_response_times()
-        #self.calculate_averages()
+        self.process_pcap_parallel()
+        self.convert_to_df()
+        self.calculate_response_times()
+        self.calculate_averages()
 
 
 def main(file_path):
