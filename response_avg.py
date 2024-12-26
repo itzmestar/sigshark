@@ -104,6 +104,7 @@ class ProcessPCAP:
         for packet in capture:
             try:
                 timestamp = float(packet.sniff_timestamp)
+                timestamp = int(timestamp*1000)
 
                 if hasattr(packet, 'tcap'):
                     protocol = 'TCAP'
