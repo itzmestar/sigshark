@@ -16,6 +16,7 @@ class ProcessPCAP:
         self.response_times_df = None
         self.total_packets = 0
         self.splitted_pcap_files = []
+        self.results = []
 
     def find_num_of_packets(self):
         try:
@@ -134,7 +135,8 @@ class ProcessPCAP:
 
         # delete file
         self.delete_pcap(pcap_file)
-        return transactions
+        df = pd.DataFrame(transactions)
+        return df
 
     @staticmethod
     def delete_pcap(pcap_file):
@@ -159,9 +161,28 @@ class ProcessPCAP:
         print(f"Spawning {processes} processes...")
 
         with mp.Pool(processes=processes) as pool:
-            results = pool.map(self.process_pcap, self.splitted_pcap_files)
+            self.results = pool.map(self.process_pcap, self.splitted_pcap_files)
 
-        self.transactions = [item for sublist in results for item in sublist]
+        with mp.Pool(processes=processes) as pool:
+            results = pool.map(self.parallel_calculate_response_times, self.results)
+
+        with mp.Pool(processes=processes) as pool:
+            pool.map(self.parallel_calculate_averages, results)
+        # self.transactions = pd.concat(results)
+        # self.transactions = [item for sublist in results for item in sublist]
+
+    def process_pcap_parallel_new(self):
+        processes = mp.cpu_count()
+        print(f"Spawning {processes} processes...")
+
+        with mp.Pool(processes=processes) as pool:
+            self.results = pool.map(self.process_pcap, self.splitted_pcap_files)
+
+        with mp.Pool(processes=processes) as pool:
+            results = pool.map(self.parallel_calculate_response_times, self.results)
+
+        with mp.Pool(processes=processes) as pool:
+            pool.map(self.parallel_calculate_averages, results)
 
     def convert_to_df(self):
         self.transactions_df = pd.DataFrame(self.transactions)
@@ -182,6 +203,23 @@ class ProcessPCAP:
                 })
         self.response_times_df = pd.DataFrame(response_times)
 
+    @staticmethod
+    def parallel_calculate_response_times(df):
+        # Group by transaction ID and calculate response time
+        response_times = []
+        for txn_id, group in df.groupby('transaction_id'):
+            group = group.sort_values(by='timestamp')  # Ensure proper ordering
+            request = group[group['msg_type'] == 'Request']
+            response = group[group['msg_type'] == 'Response']
+            if not request.empty and not response.empty:
+                response_time = response['timestamp'].iloc[0] - request['timestamp'].iloc[0]
+                response_times.append({
+                    'transaction_id': txn_id,
+                    'protocol': group['protocol'].iloc[0],
+                    'response_time': response_time,
+                })
+        return pd.DataFrame(response_times)
+
     def calculate_averages(self):
         # Compute averages
         total_avg_response_time = self.response_times_df['response_time'].mean()
@@ -191,13 +229,23 @@ class ProcessPCAP:
         print("Average Response Time by Protocol:")
         print(avg_response_time_by_protocol)
 
+    @staticmethod
+    def parallel_calculate_averages(df):
+        # Compute averages
+        total_avg_response_time = df['response_time'].mean()
+        avg_response_time_by_protocol = df.groupby('protocol')['response_time'].mean()
+
+        print(f"Total Average Response Time: {total_avg_response_time}")
+        print("Average Response Time by Protocol:")
+        print(avg_response_time_by_protocol)
+
     def workflow(self):
         self.find_num_of_packets()
         self.split_pcap()
         self.process_pcap_parallel()
-        self.convert_to_df()
-        self.calculate_response_times()
-        self.calculate_averages()
+        # self.convert_to_df()
+        # self.calculate_response_times()
+        # self.calculate_averages()
 
 
 def main(file_path):
