@@ -70,8 +70,10 @@ class ProcessPCAP:
                 return packet.ss7map.transaction_id
         elif protocol == 'Diameter':
             # Diameter specific Session-ID extraction
-            if hasattr(packet.diameter, 'session_id'):
-                return packet.diameter.session_id
+            if hasattr(packet.diameter, 'endtoendid'):
+                return packet.diameter.endtoendid
+            elif hasattr(packet.diameter, 'hopbyhopid'):
+                return packet.diameter.hopbyhopid
         return "UnknownTransactionID"
 
     @staticmethod
@@ -91,8 +93,8 @@ class ProcessPCAP:
                 return packet.ss7map.msg_type
         elif protocol == 'Diameter':
             # Diameter message type extraction (e.g., Request/Response Command Code)
-            if hasattr(packet.diameter, 'command_code'):
-                return "Request" if 'Request' in str(packet.diameter.command_code) else "Response"
+            if hasattr(packet.diameter, 'flags_request'):
+                return "Request" if packet.diameter.flags_request is True else "Response"
         return "UnknownMessageType"
 
     def process_pcap(self, pcap_file):
